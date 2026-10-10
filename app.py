@@ -1,8 +1,7 @@
 """AirAlert | two-tab Streamlit dashboard.
 
 Run: streamlit run app.py
-All charts are retrospective. Forecast probabilities remain disabled until
-models and point-in-time validation have actually been implemented.
+Historical analytics and research-only backtesting; not live warning predictions.
 """
 from __future__ import annotations
 
@@ -26,7 +25,7 @@ from analytics import (
     source_level_monthly,
 )
 from data_loader import DEFAULT_DATA_DIR, FILES, REGIONS, load_alerts, region_coverage
-from forecasting import HORIZONS, InsufficientDataError, train_and_evaluate
+from forecasting import BASELINES, HORIZONS, InsufficientDataError, train_and_evaluate
 
 st.set_page_config(
     page_title="AirAlert | Ukrainian Air Raid Analysis",
@@ -345,7 +344,8 @@ def predictions_tab() -> None:
     st.caption(
         "Input features contain only starts strictly before the forecast hour; "
         "no finishing times, retrospective durations, news, or future event counts. "
-        "The latest 28-day test period is held out from fitting and model selection."
+        "Four 28-day walk-forward folds are evaluated. Each fold selects its ML algorithm "
+        "using an earlier 14-day validation window, then scores an untouched test period."
     )
 
     file = DATA_DIR / FILES[source]
@@ -373,74 +373,176 @@ def predictions_tab() -> None:
     st.caption(
         f"**As of {report.origin.tz_convert('Europe/Kyiv'):%d %b %Y, %H:%M} Kyiv** "
         f"(UTC: {report.origin:%Y-%m-%d %H:%M}). Not a live estimate. "
-        "The model was refitted after holdout scoring using only targets observed "
-        "by this snapshot time."
+        "This snapshot model was separately refitted using only labels completed by "
+        "the snapshot time; it was never used for the held-out scores."
     )
+    latest_roll = report.all_baseline_metrics["rolling_30d"]["brier"]
+    all_briers = {key: score["brier"] for key, score in report.all_baseline_metrics.items()}
+    best_baseline_key = min(all_briers, key=all_briers.get)
+    best_baseline_brier = all_briers[best_baseline_key]
+
     m1, m2, m3, m4 = st.columns(4)
     m1.metric(f"New recorded start, next {horizon}h", f"{report.probability:.1%}")
-    m2.metric("Test Brier · model ↓", pretty_metric(report.metrics["brier"]))
-    m3.metric("Test Brier · baseline ↓", pretty_metric(report.baseline_metrics["brier"]))
-    m4.metric("Test period starts probability", pretty_metric(report.metrics["positive_rate"], percent=True))
+    m2.metric("Latest test Brier · ML ↓", pretty_metric(report.metrics["brier"]))
+    m3.metric("Latest test Brier · rolling 30d ↓", pretty_metric(latest_roll))
+    m4.metric("Test positive rate", pretty_metric(report.metrics["positive_rate"], percent=True))
 
-    if report.metrics["brier"] >= report.baseline_metrics["brier"]:
-        st.warning(
-            "**The model did not outperform the simple baseline on this test.** "
-            "Treat this result as evidence of limited predictive value, not as an "
-            "actionable probability."
+    if report.metrics["brier"] < best_baseline_brier:
+        st.success(
+            "The ML model scored better than all four baselines on the **latest held-out "
+            "period** (Brier score). This is a historical result, not proof of real-world reliability."
         )
     else:
-        st.success(
-            "The model achieved a lower Brier error than the time-of-day frequency "
-            "baseline on this held-out test. This does **not** prove real-world reliability."
+        st.warning(
+            "The ML model did **not** beat every baseline on the latest held-out period. "
+            f"The lowest-error baseline was **{BASELINES[best_baseline_key]}** "
+            f"(Brier {best_baseline_brier:.3f} vs ML {report.metrics['brier']:.3f}). "
+            "The best baseline is identified *after* evaluation for comparison, "
+            "not used to select or tune the ML algorithm."
         )
 
-    st.markdown("#### Most recent holdout: model vs historical baseline")
+    st.markdown("#### Latest held-out period · forecast probabilities")
     test = report.test
     fig = go.Figure()
     fig.add_trace(go.Scatter(
-        x=test["origin_kyiv"], y=test["model_probability"], mode="lines+markers",
-        name=report.model_name, line=dict(color=COLORS[source], width=2),
-        marker=dict(size=4),
+        x=test["origin_kyiv"], y=test["model_probability"], mode="lines",
+        name=f"ML · {report.model_name}", line=dict(color=COLORS[source], width=2.8),
     ))
     fig.add_trace(go.Scatter(
-        x=test["origin_kyiv"], y=test["baseline_probability"], mode="lines",
-        name="Hour-of-day baseline", line=dict(color="#E9AD6C", dash="dash"),
+        x=test["origin_kyiv"], y=test["rolling_30d_probability"], mode="lines",
+        name="Trailing 30 days", line=dict(color="#63D2B1", width=2, dash="dot"),
     ))
     fig.add_trace(go.Scatter(
+        x=test["origin_kyiv"], y=test["rolling_7d_probability"], mode="lines",
+        name="Trailing 7 days", line=dict(color="#FFD074", width=1.6, dash="dash"),
+    ))
+    fig.add_trace(go.Scatter(
+        x=test["origin_kyiv"], y=test["hour_of_day_probability"], mode="lines",
+        name="Historical hour-of-day", line=dict(color="#B6A5D5", width=1.1, dash="dash"),
+        opacity=0.7,
+    ))
+    fig.update_layout(
+        yaxis=dict(title="Predicted probability", range=[0, 1], tickformat=".0%"),
+        xaxis_title="Forecast origin · Kyiv time", legend=dict(orientation="h", y=-0.22),
+    )
+    st.plotly_chart(chart_defaults(fig, 380), use_container_width=True)
+
+    st.markdown("##### What actually happened in each forecast window")
+    observed = go.Figure()
+    observed.add_trace(go.Scatter(
         x=test["origin_kyiv"], y=test["actual"], mode="markers",
-        name="Observed event (0 or 1)", marker=dict(color="#75E1C1", size=5, opacity=0.5),
+        name="Recorded alert start (1=yes)",
+        marker=dict(
+            color=["#66DAB8" if x == 1 else "#8B96AA" for x in test["actual"]],
+            size=8, opacity=0.85,
+        ),
+        hovertemplate="%{x}<br>At least one new recorded start: %{y}<extra></extra>",
     ))
-    fig.update_layout(yaxis=dict(title="Probability / observed label", range=[-0.08, 1.08]),
-                      xaxis_title="Forecast origin (Kyiv local time)", legend=dict(orientation="h"))
-    st.plotly_chart(chart_defaults(fig, 390), use_container_width=True)
+    observed.update_layout(
+        yaxis=dict(title="Observed label", range=[-0.22, 1.22], tickvals=[0, 1],
+                   ticktext=["No start", "Start"]),
+        xaxis_title="Forecast origin · Kyiv time", showlegend=False,
+    )
+    st.plotly_chart(chart_defaults(observed, 210), use_container_width=True)
     st.caption(
-        "Each held-out test origin uses a non-overlapping forecast window. "
-        "The points at y=0 and y=1 are observed outcome labels, not an alert-status indicator."
+        f"Each dot is one non-overlapping {horizon}-hour window. "
+        "A dot marked 'No start' means no *recorded* new start in that window, "
+        "not that the region was safe or free of an active alert. "
+        "Rolling baselines update using prior labels only after their full forecast horizons end."
     )
 
-    left, right = st.columns([1.2, 1], gap="large")
+    st.markdown("#### Latest test: all five approaches")
+    comparison_rows = [
+        {"Approach": f"ML · {report.model_name}", "Brier ↓": report.metrics["brier"],
+         "Average precision ↑": report.metrics["average_precision"],
+         "ROC AUC ↑": report.metrics["roc_auc"]},
+    ]
+    for key, label in BASELINES.items():
+        scores = report.all_baseline_metrics[key]
+        comparison_rows.append({
+            "Approach": label, "Brier ↓": scores["brier"],
+            "Average precision ↑": scores["average_precision"],
+            "ROC AUC ↑": scores["roc_auc"],
+        })
+    st.dataframe(
+        pd.DataFrame(comparison_rows).style.format(
+            {"Brier ↓": "{:.3f}", "Average precision ↑": "{:.3f}", "ROC AUC ↑": "{:.3f}"},
+            na_rep="N/A",
+        ),
+        hide_index=True, use_container_width=True,
+    )
+    st.caption(
+        "Lower Brier is better. The constant and hour-of-day baselines use only "
+        "pre-test training labels. Rolling baselines use a trailing 7/30-day "
+        "window of labels *matured by each forecast time*, including earlier "
+        "test-period outcomes once they become historically observable. "
+        "AUC/AP can be unavailable if a test period has one outcome class."
+    )
+
+    st.markdown("#### Walk-forward evaluation · four disjoint 28-day folds")
+    folds = report.walk_forward.copy()
+    long = folds.melt(
+        id_vars=["fold_start", "fold_end"],
+        value_vars=["brier_model"] + [f"brier_{key}" for key in BASELINES],
+        var_name="approach", value_name="Brier score",
+    )
+    display_names = {"brier_model": "ML"}
+    display_names.update({f"brier_{key}": label for key, label in BASELINES.items()})
+    long["approach"] = long["approach"].map(display_names)
+    long["period"] = long["fold_start"].dt.strftime("%d %b") + " – " + long["fold_end"].dt.strftime("%d %b %Y")
+    fold_fig = px.bar(
+        long, x="period", y="Brier score", color="approach", barmode="group",
+        category_orders={"approach": ["ML", *BASELINES.values()]},
+        color_discrete_map={
+            "ML": COLORS[source], "Past overall frequency": "#8998B7",
+            "Past hour-of-day frequency": "#B6A5D5",
+            "Trailing 7-day frequency": "#FFD074",
+            "Trailing 30-day frequency": "#63D2B1",
+        },
+    )
+    fold_fig.update_layout(xaxis_title="Test interval", legend_title=None,
+                           legend=dict(orientation="h", y=-0.28))
+    st.plotly_chart(chart_defaults(fold_fig, 400), use_container_width=True)
+    st.caption(
+        "For each fold, training ends before the validation window, a model is "
+        "selected using validation Brier, and the next 28 days are evaluated. "
+        "No test-fold labels enter that fold's model. Earlier fold outcomes can "
+        "legitimately enter later folds after their forecast windows have ended."
+    )
+
+    score_cols = ["brier_model"] + [f"brier_{key}" for key in BASELINES]
+    mean_briers = folds[score_cols].mean().rename(index=display_names)
+    best_by_mean = mean_briers.idxmin()
+    ml_wins = int((folds["brier_model"] < folds["brier_rolling_30d"]).sum())
+    a, b, c = st.columns(3)
+    a.metric("Walk-forward folds", str(len(folds)))
+    b.metric("ML beats rolling 30d", f"{ml_wins} / {len(folds)}")
+    c.metric("Lowest mean fold Brier", best_by_mean)
+    st.dataframe(
+        folds.assign(
+            fold_start=folds["fold_start"].dt.strftime("%Y-%m-%d"),
+            fold_end=folds["fold_end"].dt.strftime("%Y-%m-%d"),
+        ).rename(columns={"fold_start": "Test begins (UTC)",
+                          "fold_end": "Test ends (UTC)",
+                          "selected_model": "Selected ML model",
+                          "positive_rate": "Positive rate"}),
+        hide_index=True, use_container_width=True,
+    )
+
+    left, right = st.columns([1.05, 1], gap="large")
     with left:
-        st.markdown("#### Test metrics")
-        scores_table = pd.DataFrame([
-            {"Metric": "Brier score ↓", "Model": pretty_metric(report.metrics["brier"]),
-             "Baseline": pretty_metric(report.baseline_metrics["brier"])},
-            {"Metric": "Average precision ↑", "Model": pretty_metric(report.metrics["average_precision"]),
-             "Baseline": pretty_metric(report.baseline_metrics["average_precision"])},
-            {"Metric": "ROC AUC ↑", "Model": pretty_metric(report.metrics["roc_auc"]),
-             "Baseline": pretty_metric(report.baseline_metrics["roc_auc"])},
-            {"Metric": "Event prevalence", "Model": pretty_metric(report.metrics["positive_rate"], percent=True),
-             "Baseline": "Same test labels"},
-        ])
-        st.dataframe(scores_table, hide_index=True, use_container_width=True)
-        st.caption("Brier: lower is better (0 is perfect). AUC/AP: higher is better, but may be undefined when the test has only one outcome class.")
-        st.markdown("#### Experiment configuration")
-        st.write(f"Selected ML algorithm: **{report.model_name}**")
+        st.markdown("#### Evaluation configuration")
+        st.write(f"Latest-fold selected ML algorithm: **{report.model_name}**")
         st.write(f"Train origins: **{report.train_samples:,}** · Validation: **{report.validation_samples:,}** · Test: **{report.test_samples:,}**")
-        st.write(f"Recent recorded starts (lookback window): **{report.recent_starts:,}**")
-        st.caption("Model selection uses validation Brier; the test scores are computed once after selection. The benchmark is a smoothed past hour-of-day event frequency.")
+        st.write(f"Recent recorded starts (240-day input window): **{report.recent_starts:,}**")
+        st.caption(
+            "The forecast at the end of the file is a historical replay. "
+            "Selection is by validation Brier in each fold, never by test results. "
+            "This analysis is not a model of military activity or an alert-status service."
+        )
     with right:
-        st.markdown("#### Reliability by probability band")
-        sample = report.test.copy()
+        st.markdown("#### Latest test reliability")
+        sample = test.copy()
         sample["bucket"] = pd.cut(
             sample["model_probability"], bins=[0, .2, .4, .6, .8, 1.00001],
             labels=["0–20%", "20–40%", "40–60%", "60–80%", "80–100%"],
@@ -448,35 +550,46 @@ def predictions_tab() -> None:
         )
         reliability = sample.groupby("bucket", observed=False).agg(
             predicted=("model_probability", "mean"),
-            observed=("actual", "mean"),
-            count=("actual", "size"),
+            observed=("actual", "mean"), count=("actual", "size"),
         ).reset_index()
         reliability = reliability[reliability["count"] > 0]
         if len(reliability):
-            fig2 = go.Figure()
-            fig2.add_trace(go.Scatter(x=[0, 1], y=[0, 1], mode="lines",
-                                      line=dict(dash="dash", color="#A0AEC0"), name="Perfect calibration"))
-            fig2.add_trace(go.Scatter(
+            cal = go.Figure()
+            cal.add_trace(go.Scatter(
+                x=[0, 1], y=[0, 1], mode="lines", name="Perfect calibration",
+                line=dict(dash="dash", color="#A0AEC0"),
+            ))
+            cal.add_trace(go.Scatter(
                 x=reliability["predicted"], y=reliability["observed"],
-                mode="markers+lines", name="Test calibration", customdata=reliability["count"],
+                mode="markers+lines", name="Held-out ML calibration",
+                customdata=reliability["count"],
                 marker=dict(size=10, color=COLORS[source]),
                 hovertemplate="Predicted %{x:.1%}<br>Observed %{y:.1%}<br>Samples %{customdata}<extra></extra>",
             ))
-            fig2.update_layout(xaxis=dict(title="Mean predicted probability", range=[0, 1]),
-                               yaxis=dict(title="Observed positive rate", range=[0, 1]))
-            st.plotly_chart(chart_defaults(fig2, 315), use_container_width=True)
-            st.caption("Only populated probability bands are plotted. Small groups are noisy, and this chart does not establish calibration outside the test window.")
+            cal.update_layout(
+                xaxis=dict(title="Mean predicted probability", range=[0, 1]),
+                yaxis=dict(title="Observed positive rate", range=[0, 1]),
+            )
+            st.plotly_chart(chart_defaults(cal, 310), use_container_width=True)
+            st.caption("Only populated prediction bands are shown; groups may be small.")
 
-    with st.expander("See exact chronological splits and download held-out predictions"):
-        st.write(f"Last training-label boundary: **{report.periods['train_labels_end']}**")
-        st.write(f"Last validation-label boundary / test begins: **{report.periods['validation_labels_end']}**")
-        st.write(f"Test label observation boundary: **{report.periods['test_labels_end']}**")
-        st.write(f"Selected by validation Brier: {report.validation_scores}")
+    with st.expander("Exact chronological boundaries and CSV downloads"):
+        st.write(f"Latest-fold training labels mature no later than **{report.periods['train_labels_end']}**")
+        st.write(f"Latest-fold validation labels mature no later than **{report.periods['validation_labels_end']}**")
+        st.write(f"Latest-fold test labels mature no later than **{report.periods['test_labels_end']}**")
+        st.write(f"Validation Brier by algorithm: {report.validation_scores}")
         st.dataframe(test.tail(60), hide_index=True, use_container_width=True)
         st.download_button(
-            "Download held-out predictions", data=test.to_csv(index=False).encode(),
+            "Download latest held-out predictions",
+            data=test.to_csv(index=False).encode(),
             file_name=f"{source}_{region.replace(' ', '_')}_{horizon}h_test.csv",
             mime="text/csv", key="forecast_export",
+        )
+        st.download_button(
+            "Download walk-forward fold results",
+            data=folds.to_csv(index=False).encode(),
+            file_name=f"{source}_{region.replace(' ', '_')}_{horizon}h_walkforward.csv",
+            mime="text/csv", key="fold_export",
         )
     st.warning(
         "**Safety & data limits:** This is a research demonstration of *recorded alert starts*, "
