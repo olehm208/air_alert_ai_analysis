@@ -1,4 +1,4 @@
-# AirAlert Analytics — Dashboard v1
+# AirAlert Analytics
 
 A Python/Streamlit dashboard with two tabs:
 
