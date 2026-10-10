@@ -26,6 +26,7 @@ from analytics import (
     source_level_monthly,
 )
 from data_loader import DEFAULT_DATA_DIR, FILES, REGIONS, load_alerts, region_coverage
+from forecasting import HORIZONS, InsufficientDataError, train_and_evaluate
 
 st.set_page_config(
     page_title="AirAlert | Ukrainian Air Raid Analysis",
@@ -275,8 +276,23 @@ def analytics_tab() -> None:
         )
 
 
+@st.cache_data(show_spinner="Fitting and backtesting source-specific models…", ttl=3600)
+def cached_forecast(
+    source: str, region: str, horizon: int, directory: str, file_mtime_ns: int,
+):
+    """Cache expensive work per source, region, horizon and CSV modification."""
+    alerts = get_dataset(source, directory, file_mtime_ns)
+    return train_and_evaluate(alerts, region, horizon)
+
+
+def pretty_metric(value: float | None, *, percent: bool = False) -> str:
+    if value is None:
+        return "N/A (one-class test)"
+    return f"{value:.1%}" if percent else f"{value:.3f}"
+
+
 def predictions_tab() -> None:
-    st.subheader("Experimental alert forecasting")
+    st.subheader("Experimental alert-start forecasting")
     source = source_picker("predictions_source")
     df = source_data(source)
     if df is None or df.empty:
@@ -284,50 +300,191 @@ def predictions_tab() -> None:
 
     coverage = region_coverage(df)
     coverage_status = dict(zip(coverage["region"], coverage["coverage"]))
-    min_date, last_date = available_date_range(df)
-    p1, p2 = st.columns([2, 1])
-    with p1:
+    all_regions = sorted(set(REGIONS) | set(df["region"].dropna()))
+    a, b = st.columns([2, 1])
+    with a:
         region = st.selectbox(
-            "Region to forecast", sorted(set(REGIONS) | set(df["region"].dropna())),
+            "Region", all_regions,
+            index=all_regions.index("Kyiv City") if "Kyiv City" in all_regions else 0,
             key=f"prediction_region_{source}",
         )
-    with p2:
-        horizon = st.selectbox("Forecast horizon", [1, 3, 6, 12], index=2, format_func=lambda h: f"Next {h} hours", key="prediction_horizon")
+    with b:
+        horizon = st.selectbox(
+            "Forecast horizon", HORIZONS, index=2,
+            format_func=lambda h: f"Next {h} hours",
+            key=f"prediction_horizon_{source}",
+        )
 
-    s1, s2, s3 = st.columns(3)
-    s1.metric("Forecast probability", "—")
-    s2.metric("Model status", "Not trained")
-    s3.metric("Latest source record", last_date.strftime("%d %b %Y"))
-
+    last_record = df["started_at"].max()
+    observation_end = last_record.floor("h")
+    st.caption(
+        f"Source: **{SOURCE_NAMES[source]}** · Latest recorded start: "
+        f"**{last_record.tz_convert('Europe/Kyiv'):%d %b %Y, %H:%M} Kyiv** · "
+        f"Last complete source-hour boundary: "
+        f"**{observation_end.tz_convert('Europe/Kyiv'):%d %b %Y, %H:%M} Kyiv**"
+    )
+    if source == "official":
+        st.warning(
+            "This official CSV may be stale: no starts are recorded later than "
+            f"{last_record.tz_convert('Europe/Kyiv'):%d %b %Y}. "
+            "Predictions here are dated historical replays, **not current forecasts**."
+        )
     if coverage_status.get(region) != "History available":
         st.warning(
-            f"{region}: {coverage_status.get(region, 'Unknown coverage')}. "
-            "The model must not output zero probability or infer a cancellation from missing data."
+            f"{region}: **{coverage_status.get(region, 'unknown coverage')}**. "
+            "No record does not mean no alert. A probability may be unavailable."
         )
+
     st.info(
-        "The prediction interface is ready, but **there is no forecasting model yet**. "
-        "Percentages and validation metrics will only appear after we implement and "
-        "test leakage-free, source-specific models."
-    )
-    st.markdown("#### Planned experiment")
-    st.write(
-        f"For **{region}**, the {SOURCE_NAMES[source].lower()} model will estimate "
-        f"whether a **new recorded alert** begins within **{horizon} hours** "
-        "after a known forecast timestamp. The final target and aggregation "
-        "method will account for source-specific reporting levels."
-    )
-    st.markdown("#### Evaluation checklist")
-    st.markdown(
-        "- Train on observations earlier than each forecast origin.\n"
-        "- Do not use alert completion times that were not yet known at that origin.\n"
-        "- Reserve the latest data period for out-of-sample testing.\n"
-        "- Compare to simple frequency/persistence baselines.\n"
-        "- Measure probability calibration and classification skill, not just accuracy.\n"
-        "- Mark missing or incomplete regions as **insufficient data**."
+        "**Target:** at least one *new recorded alert start* anywhere in the "
+        f"selected oblast/city during [{horizon}-hour forecast origin, forecast end). "
+        "Official data uses oblast, raion and hromada notices, deduplicated only by "
+        "exact record; Volunteer uses oblast-level starts. **These source probabilities "
+        "have different meanings and must not be compared as threat levels.**"
     )
     st.caption(
-        f"Available {SOURCE_NAMES[source].lower()} source history ends on {last_date}. "
-        "This application does not track live alerts."
+        "Input features contain only starts strictly before the forecast hour; "
+        "no finishing times, retrospective durations, news, or future event counts. "
+        "The latest 28-day test period is held out from fitting and model selection."
+    )
+
+    file = DATA_DIR / FILES[source]
+    signature = (source, region, horizon, str(DATA_DIR), file.stat().st_mtime_ns)
+    if st.button("Train, backtest and show forecast", type="primary", key="fit_forecast"):
+        st.session_state["forecast_signature"] = signature
+    if st.session_state.get("forecast_signature") != signature:
+        st.caption("Select a source, region and horizon, then press the button to run the experiment.")
+        return
+
+    try:
+        report = cached_forecast(*signature)
+    except InsufficientDataError as exc:
+        st.error(f"Insufficient data — {exc}")
+        st.caption(
+            "This source/region remains available in Analytics. "
+            "We deliberately do not substitute a fabricated 0% probability."
+        )
+        return
+    except (ValueError, RuntimeError) as exc:
+        st.error(f"Forecast could not be computed: {exc}")
+        return
+
+    st.markdown("#### Historical snapshot forecast")
+    st.caption(
+        f"**As of {report.origin.tz_convert('Europe/Kyiv'):%d %b %Y, %H:%M} Kyiv** "
+        f"(UTC: {report.origin:%Y-%m-%d %H:%M}). Not a live estimate. "
+        "The model was refitted after holdout scoring using only targets observed "
+        "by this snapshot time."
+    )
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric(f"New recorded start, next {horizon}h", f"{report.probability:.1%}")
+    m2.metric("Test Brier · model ↓", pretty_metric(report.metrics["brier"]))
+    m3.metric("Test Brier · baseline ↓", pretty_metric(report.baseline_metrics["brier"]))
+    m4.metric("Test period starts probability", pretty_metric(report.metrics["positive_rate"], percent=True))
+
+    if report.metrics["brier"] >= report.baseline_metrics["brier"]:
+        st.warning(
+            "**The model did not outperform the simple baseline on this test.** "
+            "Treat this result as evidence of limited predictive value, not as an "
+            "actionable probability."
+        )
+    else:
+        st.success(
+            "The model achieved a lower Brier error than the time-of-day frequency "
+            "baseline on this held-out test. This does **not** prove real-world reliability."
+        )
+
+    st.markdown("#### Most recent holdout: model vs historical baseline")
+    test = report.test
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=test["origin_kyiv"], y=test["model_probability"], mode="lines+markers",
+        name=report.model_name, line=dict(color=COLORS[source], width=2),
+        marker=dict(size=4),
+    ))
+    fig.add_trace(go.Scatter(
+        x=test["origin_kyiv"], y=test["baseline_probability"], mode="lines",
+        name="Hour-of-day baseline", line=dict(color="#E9AD6C", dash="dash"),
+    ))
+    fig.add_trace(go.Scatter(
+        x=test["origin_kyiv"], y=test["actual"], mode="markers",
+        name="Observed event (0 or 1)", marker=dict(color="#75E1C1", size=5, opacity=0.5),
+    ))
+    fig.update_layout(yaxis=dict(title="Probability / observed label", range=[-0.08, 1.08]),
+                      xaxis_title="Forecast origin (Kyiv local time)", legend=dict(orientation="h"))
+    st.plotly_chart(chart_defaults(fig, 390), use_container_width=True)
+    st.caption(
+        "Each held-out test origin uses a non-overlapping forecast window. "
+        "The points at y=0 and y=1 are observed outcome labels, not an alert-status indicator."
+    )
+
+    left, right = st.columns([1.2, 1], gap="large")
+    with left:
+        st.markdown("#### Test metrics")
+        scores_table = pd.DataFrame([
+            {"Metric": "Brier score ↓", "Model": pretty_metric(report.metrics["brier"]),
+             "Baseline": pretty_metric(report.baseline_metrics["brier"])},
+            {"Metric": "Average precision ↑", "Model": pretty_metric(report.metrics["average_precision"]),
+             "Baseline": pretty_metric(report.baseline_metrics["average_precision"])},
+            {"Metric": "ROC AUC ↑", "Model": pretty_metric(report.metrics["roc_auc"]),
+             "Baseline": pretty_metric(report.baseline_metrics["roc_auc"])},
+            {"Metric": "Event prevalence", "Model": pretty_metric(report.metrics["positive_rate"], percent=True),
+             "Baseline": "Same test labels"},
+        ])
+        st.dataframe(scores_table, hide_index=True, use_container_width=True)
+        st.caption("Brier: lower is better (0 is perfect). AUC/AP: higher is better, but may be undefined when the test has only one outcome class.")
+        st.markdown("#### Experiment configuration")
+        st.write(f"Selected ML algorithm: **{report.model_name}**")
+        st.write(f"Train origins: **{report.train_samples:,}** · Validation: **{report.validation_samples:,}** · Test: **{report.test_samples:,}**")
+        st.write(f"Recent recorded starts (lookback window): **{report.recent_starts:,}**")
+        st.caption("Model selection uses validation Brier; the test scores are computed once after selection. The benchmark is a smoothed past hour-of-day event frequency.")
+    with right:
+        st.markdown("#### Reliability by probability band")
+        sample = report.test.copy()
+        sample["bucket"] = pd.cut(
+            sample["model_probability"], bins=[0, .2, .4, .6, .8, 1.00001],
+            labels=["0–20%", "20–40%", "40–60%", "60–80%", "80–100%"],
+            include_lowest=True,
+        )
+        reliability = sample.groupby("bucket", observed=False).agg(
+            predicted=("model_probability", "mean"),
+            observed=("actual", "mean"),
+            count=("actual", "size"),
+        ).reset_index()
+        reliability = reliability[reliability["count"] > 0]
+        if len(reliability):
+            fig2 = go.Figure()
+            fig2.add_trace(go.Scatter(x=[0, 1], y=[0, 1], mode="lines",
+                                      line=dict(dash="dash", color="#A0AEC0"), name="Perfect calibration"))
+            fig2.add_trace(go.Scatter(
+                x=reliability["predicted"], y=reliability["observed"],
+                mode="markers+lines", name="Test calibration", customdata=reliability["count"],
+                marker=dict(size=10, color=COLORS[source]),
+                hovertemplate="Predicted %{x:.1%}<br>Observed %{y:.1%}<br>Samples %{customdata}<extra></extra>",
+            ))
+            fig2.update_layout(xaxis=dict(title="Mean predicted probability", range=[0, 1]),
+                               yaxis=dict(title="Observed positive rate", range=[0, 1]))
+            st.plotly_chart(chart_defaults(fig2, 315), use_container_width=True)
+            st.caption("Only populated probability bands are plotted. Small groups are noisy, and this chart does not establish calibration outside the test window.")
+
+    with st.expander("See exact chronological splits and download held-out predictions"):
+        st.write(f"Last training-label boundary: **{report.periods['train_labels_end']}**")
+        st.write(f"Last validation-label boundary / test begins: **{report.periods['validation_labels_end']}**")
+        st.write(f"Test label observation boundary: **{report.periods['test_labels_end']}**")
+        st.write(f"Selected by validation Brier: {report.validation_scores}")
+        st.dataframe(test.tail(60), hide_index=True, use_container_width=True)
+        st.download_button(
+            "Download held-out predictions", data=test.to_csv(index=False).encode(),
+            file_name=f"{source}_{region.replace(' ', '_')}_{horizon}h_test.csv",
+            mime="text/csv", key="forecast_export",
+        )
+    st.warning(
+        "**Safety & data limits:** This is a research demonstration of *recorded alert starts*, "
+        "not a detector of incoming threats. Missing rows, delayed/edited source posts and "
+        "active or permanently ongoing alerts cannot be interpreted as safety. "
+        "The exports lack publication/ingestion timestamps, so historical availability "
+        "cannot be proven for retrospectively backfilled messages. "
+        "Always follow official air-raid warnings."
     )
 
 
