@@ -1,15 +1,16 @@
-# AirAlert dashboard v3 — changes since v2
+## v7 — October 10, 2026
 
-- Four fixed chronological, disjoint 28-day test folds, each preceded by its own 14-day validation period; model selection is performed only on that validation data.
-- Added four baselines: training-only overall historical frequency, training-only hour-of-day frequency, and adaptive trailing 7-day and 30-day frequencies. Trailing rates use only labels whose *entire* forecast window has finished by prediction time.
-- Added a five-way Brier/AP/ROC comparison, four-fold backtest bar chart and a four-fold scores table.
-- Separated actual binary outcomes into their own chart; removed the visually confusing overlay of 0/1 outcomes on predicted probability lines.
-- Added independent CSV exports for newest predictions and all fold scores.
-- Added tests proving earlier folds and historical rolling baseline values cannot be changed by future alert starts. Fixed no-history prior fallback.
-- The old source-separated analytics, region selection, CSV exports and safety/data-quality limitations remain.
+- Removed navigation-button `help=` hover tooltips that obstructed adjacent sidebar buttons.
+- Added an editable `standing_alerts.json` manual-context register with **1 assumed ongoing alert** each for Luhansk, Crimea and Sevastopol, and an explicit `ended` state for later verified cancellations.
+- Analytics clearly separates CSV-recorded starts from standing-context counts; Predictions display the annotation without using it to fabricate probabilities.
+- Added five new regression tests; all 34 tests pass.
+- No changes to ML features, targets, scoring, chronological splits or source handling.
 
-## Reproduced finding
+# AirAlert Dashboard v6 — fix theme and navigation
 
-For Kyiv City, a six-hour forecast on the supplied October 2026 historical exports, the trailing 30-day frequency baseline beat ML in every fold of both sources. The source-specific holdout Brier scores in the latest fold were volunteer ML **0.177** vs trailing-30d **0.173**, and official ML **0.318** vs trailing-30d **0.246**.
-
-This does not establish a real-world alert prediction capability. It measures prediction of **newly recorded alert starts**, using historical CSV exports with no immutable publication/ingestion timestamps. Use official warnings for safety.
+- Fixed the **`RecursionError`** in the dark chart palette. Region-specific dark colors are now constant hex values rather than self-recursive `chart_accent()` calls. Added a regression test that calls every palette color in both Light and Dark appearances.
+- Native Streamlit **Dark** now uses an AMOLED-black `#000000` page *and sidebar* in `.streamlit/config.toml`. Native Light remains independently styled by Streamlit.
+- Removed the application-specific AMOLED toggle. Use **⋮ → Settings → Light/Dark** (the Dark choice is AMOLED).
+- Native desktop sidebar **hide** is replaced with a custom **expand/compact** control. Streamlit's `initial_sidebar_state="locked"` keeps the sidebar pinned on desktop; the custom first button switches between an 86px icon rail and a 230px labeled sidebar. Mobile still uses Streamlit's adaptive collapse behavior.
+- The global source selector remains in the top-right **⚙️** popover; Streamlit's native menu cannot accept arbitrary Python widgets.
+- Removed styling unrelated to layout; the native theme supplies widget/alert colors in both modes. Forecasting and analytics computations are unchanged.

@@ -1,10 +1,33 @@
+# Native Streamlit appearance: ⋮ → Settings → Appearance.
+# The native Dark option uses an AMOLED-black palette; native Light remains light.
+# There is no additional AMOLED toggle in the application.
 [theme]
 base = "dark"
-primaryColor = "#8DABFF"
-backgroundColor = "#0C111B"
-secondaryBackgroundColor = "#171F30"
-textColor = "#EAF0FF"
+primaryColor = "#6D9FFF"
 font = "sans serif"
+showSidebarBorder = true
+
+[theme.dark]
+primaryColor = "#8DABFF"
+backgroundColor = "#000000"
+secondaryBackgroundColor = "#0D111A"
+textColor = "#EAF0FF"
+
+[theme.dark.sidebar]
+backgroundColor = "#000000"
+secondaryBackgroundColor = "#0D111A"
+textColor = "#EAF0FF"
+
+[theme.light]
+primaryColor = "#3669BE"
+backgroundColor = "#F6F8FC"
+secondaryBackgroundColor = "#FFFFFF"
+textColor = "#19253A"
+
+[theme.light.sidebar]
+backgroundColor = "#EFF3FA"
+secondaryBackgroundColor = "#FFFFFF"
+textColor = "#19253A"
 
 [server]
 headless = true

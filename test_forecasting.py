@@ -86,7 +86,7 @@ def test_train_validation_test_labels_fully_mature_before_cutoffs():
     assert all(val.index + pd.Timedelta(hours=horizon) <= bounds["validation_labels_end"])
     assert all(test.index >= bounds["validation_labels_end"])
     assert all(test.index + pd.Timedelta(hours=horizon) <= observation_end)
-    assert all(np.diff(test.index.asi8) == pd.Timedelta(hours=horizon).value)
+    assert all((test.index[1:] - test.index[:-1]) == pd.Timedelta(hours=horizon))
 
 
 def test_missing_region_has_no_fabricated_probability():

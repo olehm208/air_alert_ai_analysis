@@ -1,0 +1,9 @@
+{
+  "as_of_date": "2026-10-10",
+  "basis": "Project-owner assumption; not confirmed by the historical CSV or a live official status feed.",
+  "regions": {
+    "Luhanska oblast": "assumed_ongoing",
+    "Crimea (Autonomous Republic)": "assumed_ongoing",
+    "Sevastopol City": "assumed_ongoing"
+  }
+}
