@@ -7,20 +7,9 @@ A Python/Streamlit dashboard with two tabs:
   
 > **Important:** This is a retrospective research project, **not** a real-time alert monitoring service. No plotted count or future prediction should be used in safety decisions. A missing record does **not** imply that an area is safe.
 
-## Project layout
+## Dataset
 
-```text
-AI_Proj/
-├── app.py
-├── analytics.py
-├── data_loader.py
-├── inspect_data.py
-├── requirements.txt
-├── .streamlit/
-│   └── config.toml
-├── test_analytics.py
-└── test_data_loader.py
-```
+This project uses [this dataset](https://github.com/Vadimkin/ukrainian-air-raid-sirens-dataset) for analysis and prediction, and that dataset contains two different dataset - **volunteer** and **official**. If you want to regenerate the dataset, you should use that repository. This is why "dataset_repo" is in .gitignore.
 
 ## Start
 
