@@ -210,29 +210,33 @@ def data_quality_notice(source: str, rows: pd.DataFrame) -> None:
 
 
 def render_global_header() -> None:
-    title, options = st.columns([7.5, 1], vertical_alignment="top")
-    with title:
-        st.markdown(
-            """
-            <div class="hero">
-                <div class="hero-kicker">Ukraine · time series research</div>
-                <h1>AirAlert Analytics</h1>
-                <p>Historical alerts, source-aware analysis and evaluated forecasts.</p>
-            </div>
-            """,
-            unsafe_allow_html=True,
+    """Keep source controls below the hero, outside Streamlit's toolbar overlay.
+
+    A popover in a first-row right column was covered by the fixed Streamlit
+    header on desktop. A native selectbox placed after the title is reliable
+    across narrow screens, themes, and reruns. Its key binds the shared source
+    used by both Analytics and Predictions directly to Streamlit session state.
+    """
+    st.markdown(
+        """
+        <div class="hero">
+            <div class="hero-kicker">Ukraine · time series research</div>
+            <h1>AirAlert Analytics</h1>
+            <p>Historical alerts, source-aware analysis and evaluated forecasts.</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    # This is a separate row *after* the hero. The fixed Streamlit toolbar can
+    # overlap a top-of-page column, but cannot cover this later control.
+    _, source_column = st.columns([4, 1.65], vertical_alignment="bottom")
+    with source_column:
+        st.selectbox(
+            "Data source",
+            options=("volunteer", "official"),
+            format_func=lambda value: SOURCE_NAMES[value],
+            key="global_source",
         )
-    with options:
-        with st.popover("⚙️", help="Choose data source", use_container_width=True):
-            st.markdown("**Data source**")
-            selected = st.radio(
-                "Historical data", ["Volunteer", "Official"],
-                index=0 if current_source() == "volunteer" else 1,
-                label_visibility="collapsed", horizontal=True,
-                key="source_in_settings",
-            )
-            st.session_state.global_source = selected.lower()
-            st.caption("Sources stay independent in analytics and predictions.")
 
 
 @st.cache_data(show_spinner=False)
@@ -806,8 +810,12 @@ source = current_source()
 
 if page == "Analytics":
     analytics_tab(source)
-else:
+elif page == "Predictions":
     predictions_tab(source)
+elif page == "Methodology":
+    st.markdown((Path(__file__).resolve().parent / "METHODOLOGY.md").read_text(encoding="utf-8"))
+elif page == "About Me":
+    st.markdown((Path(__file__).resolve().parent / "ABOUT_ME.md").read_text(encoding="utf-8"))
 
 st.divider()
 st.caption(
