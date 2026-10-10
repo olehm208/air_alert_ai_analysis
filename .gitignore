@@ -218,3 +218,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# dataset repository, since it has confidential stuff and session id that can compromise your Telegram account.
+dataset_repo/
