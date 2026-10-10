@@ -60,9 +60,6 @@ Dataset regeneration updates the dashboard cache automatically based on the CSV'
 
 All 27 administrative areas in the current data loader are selectable, including Crimea, Sevastopol, and Luhansk. Missing and sparse data are called out, rather than interpreted as zero risk. New observations will appear after refreshing the exported CSVs. **The dashboard cannot see cancellations that its upstream data generator does not record**, so you should never interpret this dashboard as current alert status.
 
-## Next phase: forecasting
-
-We will implement feature generation using as-of timestamps and historical records, train volunteer and official models independently, and test on the latest available holdout with rolling/chronological validation. Historical retrospective completion timestamps must **not** be used as features until they were actually known.
 
 ## Privacy
 
