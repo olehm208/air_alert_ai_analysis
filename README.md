@@ -3,8 +3,8 @@
 A Python/Streamlit dashboard with two tabs:
 
 - **Analytics:** real, interactive statistics from separately selectable **Volunteer** or **Official** CSV exports, with region/date filters, charts, and CSV export.
-- **Predictions:** UI prepared for **two separate forecasting experiments**, but **no fabricated probabilities**. Forecasting models and leakage-free testing are the next step.
-
+- **Predictions:** UI prepared for **two separate forecasting experiments**, but **no fabricated probabilities**.
+  
 > **Important:** This is a retrospective research project, **not** a real-time alert monitoring service. No plotted count or future prediction should be used in safety decisions. A missing record does **not** imply that an area is safe.
 
 ## Project layout
@@ -19,15 +19,8 @@ AI_Proj/
 ├── .streamlit/
 │   └── config.toml
 ├── test_analytics.py
-├── test_data_loader.py
-└── dataset_repo/                         # ignored, contains your credentials
-    └── ukrainian-air-raid-sirens-dataset/
-        └── datasets/
-            ├── volunteer_data_en.csv
-            └── official_data_en.csv
+└── test_data_loader.py
 ```
-
-The archive contains the Python app and supporting files **but no Telegram credentials or CSVs**. Unzip it into your existing `AI_Proj/` directory; overwrite previous versions of the starter module if prompted.
 
 ## Start
 
